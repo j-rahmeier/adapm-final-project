@@ -1,0 +1,433 @@
+Requirements:
+trial_summary from read_data.R
+
+# Library
+```{r}
+library(lme4)
+library(emmeans)
+library(lmerTest)
+library(performance)
+library(Rmisc)
+library(tidyverse)
+library(dplyr)
+library(sjPlot)
+
+
+pbkrtest.limit = 4001 # Makes it so DF calculations work for this large of a number
+```
+
+# Read data
+```{r}
+# Summarized measures for each individual trial
+model_data <- trial_summary %>%
+	mutate(
+		visibility = as.numeric(visibility),
+		visibility_f  = as.factor(visibility),
+		Config_Number = factor(Config_Number),
+		ID = as.factor(ID)
+	)
+
+# Set order from low to high visibility while keeping 150 as the reference/control
+model_data$visibility_f <- factor(
+  model_data$visibility_f,
+  levels = c("25", "30", "40", "55", "150")
+)
+contrasts(model_data$visibility_f) <- contr.treatment(
+  levels(model_data$visibility_f),
+  base = 5
+)
+
+# Summarized measures combined for each vis. condition
+visibility_summary <- visibility_summary %>%
+	mutate(
+		visibility = as.numeric(visibility),
+		visibility_f  = factor(
+			visibility,
+			levels = c(25, 30, 40, 55, 150)
+		),
+		ID = as.factor(ID)
+	)
+```
+
+
+# Mean Velocity
+```{r}
+m_vel <- lmer(
+	Mean_Velocity ~ visibility_f +
+		(1 | ID) +
+		(1 | Config_Number) +
+		(1 | ID:Config_Number),
+	data = model_data,
+	REML = TRUE
+)
+
+summary(m_vel)
+anova(m_vel)
+```
+```{r}
+r2(m_vel)
+```
+
+Diagnoses and post-hoc
+```{r}
+# Residuals
+plot(m_vel)
+
+# QQ plot
+qqnorm(residuals(m_vel))
+qqline(residuals(m_vel))
+
+# EMMs
+emm_velocity <- emmeans(m_vel, ~ visibility_f)
+emm_velocity
+
+# test every condition against every other
+#pairs(emm_velocity, adjust = "tukey")
+# test consecutive conditions (25 vs 30, 40 vs 30, etc)
+contrast(emm_velocity, method = "consec", adjust = "holm")
+# test every condition against control
+#contrast(emm_velocity, method = "trt.vs.ctrl", ref = 5, adjust = "holm")
+
+plot(emm_velocity)
+
+rm(emm_velocity)
+```
+
+# Mean Resets
+```{r}
+m_reset <- glmer.nb(
+	count_reset ~ visibility_f +
+		(1 | ID) +
+		(1 | Config_Number) +
+		(1 | ID:Config_Number),
+	data = model_data,
+	control = glmerControl(optimizer = "bobyqa")
+)
+
+summary(m_reset)
+anova(m_reset)
+
+# Null model for omnibus
+m_reset_null <- update(m_reset, . ~ . - visibility_f + 1)
+anova(m_reset_null, m_reset)
+
+```
+```{r}
+r2(m_reset)
+```
+
+Diagnoses and post-hoc
+```{r}
+check_overdispersion(m_reset)
+
+emm_reset <- emmeans(m_reset, ~ visibility_f, type = "response")
+emm_reset
+
+# test every condition against every other
+#pairs(emm_reset, adjust = "tukey")
+# test consecutive conditions (25 vs 30, 40 vs 30, etc)
+contrast(emm_reset, method = "consec", adjust = "holm")
+# test every condition against control
+#contrast(emm_reset, method = "trt.vs.ctrl", ref = 5, adjust = "holm")
+
+plot(emm_reset)
+
+rm(emm_reset)
+```
+
+# Mean Absolute Angular Acceleration
+```{r}
+m_MAAA <- lmer(
+	MAAA ~ visibility_f +
+		(1 | ID) +
+		(1 | Config_Number) +
+		(1 | ID:Config_Number),
+	data = model_data,
+	REML = TRUE
+)
+
+summary(m_MAAA)
+anova(m_MAAA)
+```
+```{r}
+r2(m_MAAA)
+```
+
+Diagnoses and post-hoc
+```{r}
+emm_MAAA <- emmeans(m_MAAA, ~ visibility_f)
+emm_MAAA
+
+# test every condition against every other
+#pairs(emm_MAAA, adjust = "tukey")
+# test consecutive conditions (25 vs 30, 40 vs 30, etc)
+contrast(emm_MAAA, method = "consec", adjust = "holm")
+# test every condition against control
+#contrast(emm_MAAA, method = "trt.vs.ctrl", ref = 5, adjust = "holm")
+
+rm(emm_MAAA)
+```
+
+
+# Total Steering
+```{r}
+m_steering <- lmer(
+	Total_Steering ~ visibility_f +
+		(1 | ID) +
+		(1 | Config_Number) +
+		(1 | ID:Config_Number),
+	data = model_data,
+	REML = TRUE
+)
+
+summary(m_steering)
+anova(m_steering)
+```
+```{r}
+r2(m_steering)
+```
+
+Diagnoses and post-hoc
+```{r}
+emm_steering <- emmeans(m_steering, ~ visibility_f)
+emm_steering
+
+# test every condition against every other
+#pairs(emm_steering, adjust = "tukey")
+# test consecutive conditions (25 vs 30, 40 vs 30, etc)
+contrast(emm_steering, method = "consec", adjust = "holm")
+# test every condition against control
+#contrast(emm_steering, method = "trt.vs.ctrl", ref = 5, adjust = "holm")
+
+rm(emm_steering)
+```
+
+# Plots
+
+Combined performance plots with within-subject 95% confidence intervals
+```{r performance-plots}
+measure_labels <- c(
+	Mean_Velocity = "Mean Velocity (m/s)",
+	Mean_Resets = "Mean Reset Count",
+	Mean_Total_Steering = "Mean Total Steering (deg)",
+	Mean_MAAA = "Mean Abs. Angular Acceleration (deg/s^2)"
+)
+
+# Prepare plotting data even when the model-preparation chunk has not run.
+performance_data <- visibility_summary %>%
+	dplyr::mutate(
+		visibility = as.numeric(as.character(visibility)),
+		visibility_f = factor(visibility, levels = c(25, 30, 40, 55, 150)),
+		ID = factor(ID)
+	)
+
+# Participant-level values for the individual lines.
+plot_input <- performance_data %>%
+	dplyr::select(ID, visibility, dplyr::all_of(names(measure_labels))) %>%
+	tidyr::pivot_longer(
+		cols = dplyr::all_of(names(measure_labels)),
+		names_to = "Measure",
+		values_to = "Value"
+	) %>%
+
+	dplyr::mutate(
+		Measure = factor(
+			Measure,
+			levels = names(measure_labels),
+			labels = unname(measure_labels)
+		)
+	)
+
+# Calculate each measure's CI and combine into plotting data.
+plot_CI <- lapply(names(measure_labels), function(measure) {
+	Rmisc::summarySEwithin(
+		performance_data,
+		measurevar = measure,
+		withinvars = "visibility_f",
+		idvar = "ID",
+		conf.interval = 0.95
+	) %>%
+		dplyr::transmute(
+			visibility = as.numeric(as.character(visibility_f)),
+			Measure = measure,
+			Value = .data[[measure]],
+			ci = ci
+		)
+}) %>%
+	dplyr::bind_rows() %>%
+	dplyr::mutate(
+		Measure = factor(
+			Measure,
+			levels = names(measure_labels),
+			labels = unname(measure_labels)
+		)
+	)
+
+# Build one panel per measure so each column has its own bottom x-axis.
+performance_panels <- lapply(seq_along(measure_labels), function(i) {
+	measure_label <- unname(measure_labels[i])
+	panel_input <- dplyr::filter(plot_input, Measure == measure_label)
+	panel_CI <- dplyr::filter(plot_CI, Measure == measure_label)
+
+	p <- ggplot(panel_input, aes(x = visibility, y = Value)) +
+	# participant lines
+	geom_line(
+		aes(group = ID, color = ID),
+		alpha = 0.5
+	) +
+	geom_point(
+		aes(color = ID),
+		alpha = 0.6
+	) +
+	# overall mean
+	geom_line(
+		data = panel_CI,
+		aes(
+			x = visibility,
+			y = Value,
+			group = 1
+		),
+		color = "black",
+		inherit.aes = FALSE
+	) +
+	geom_point(
+		data = panel_CI,
+		aes(
+			x = visibility,
+			y = Value
+		),
+		color = "black",
+		inherit.aes = FALSE
+	) +
+	# within-subject 95% CI
+	geom_errorbar(
+		data = panel_CI,
+		aes(
+			x = visibility,
+			ymin = Value - ci,
+			ymax = Value + ci
+		),
+		color = "black",
+		inherit.aes = FALSE
+	) +
+	# styling
+	scale_x_continuous(breaks = c(25, 30, 40, 55, 150)) +
+	labs(
+		tag = paste0("(", letters[i], ")"),
+		x = "Visibility (m)",
+		y = measure_label,
+		color = "Participant"
+	) +
+	theme_bw() +
+	theme(
+		legend.position = "none",
+		plot.tag = element_text(face = "italic"),
+		plot.tag.position = "topleft"
+	)
+
+	# The first two panels form the top row.
+	if (i <= 2) {
+		p <- p + theme(
+			axis.title.x = element_blank(),
+			axis.text.x = element_blank(),
+			axis.ticks.x = element_blank()
+		)
+	}
+	p
+})
+
+patchwork::wrap_plots(performance_panels, ncol = 2, byrow = TRUE) 
+
+```
+
+
+
+
+# Random slope comparison: ID
+
+```{r}
+m2_vel <- lmer(
+	Mean_Velocity ~ visibility_f +
+		(1 | Config_Number) +
+		(1 | ID:Config_Number) +
+        (1 + visibility_f | ID),
+	data = model_data,
+	REML = TRUE
+)
+
+m2_reset <- glmer.nb(
+	count_reset ~ visibility_f +
+		(1 | Config_Number) +
+		(1 | ID:Config_Number) +
+        (1 + visibility_f | ID),
+	data = model_data,
+	control = glmerControl(optimizer = "bobyqa")
+)
+
+m2_maaa <- lmer(
+	MAAA ~ visibility_f +
+		(1 | Config_Number) +
+		(1 | ID:Config_Number) +
+        (1 + visibility_f | ID),
+	data = model_data,
+	REML = TRUE
+)
+
+m2_steering <- lmer(
+	Total_Steering ~ visibility_f +
+		(1 | Config_Number) +
+		(1 | ID:Config_Number) +
+        (1 + visibility_f | ID),
+	data = model_data,
+	REML = TRUE
+)
+```
+
+```{r singularity}
+isSingular(m2_vel)
+isSingular(m2_reset)
+isSingular(m2_maaa)
+isSingular(m2_steering)
+```
+```{r AIC_and_BIC}
+# lower aic = better
+
+AIC(m_vel, m2_vel) 
+BIC(m_vel, m2_vel)
+# m2 lower for both -> see singularity problem
+
+AIC(m_reset, m2_reset)
+BIC(m_reset, m2_reset)
+# m1 lower for both
+
+AIC(m_MAAA, m2_maaa)
+BIC(m_MAAA, m2_maaa)
+# m2 has better AIC, m1 better BIC
+
+AIC(m_steering, m2_steering)
+BIC(m_steering, m2_steering)
+# m2 has better AIC, m1 better BIC
+
+```
+
+
+# Print summary for models
+```{r}
+tab_model(
+	m_vel,
+	m_MAAA,
+	m_steering,
+	df.method = "satterthwaite",
+	show.df = TRUE,
+	show.stat = TRUE,
+	file = "cont_models.html"
+)
+
+tab_model(
+	m_reset,
+	show.df = TRUE,
+	show.stat = TRUE,
+	show.loglik = TRUE,
+	file = "reset_model.html"
+)
+```

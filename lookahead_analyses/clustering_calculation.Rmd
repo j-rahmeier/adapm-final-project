@@ -1,0 +1,377 @@
+Requirements:
+clean_data and obstacle_df
+(read from read_data.R)
+
+Library
+```{r}
+library(ggplot2)
+library(dplyr)
+library(patchwork)
+```
+
+Find if route goes left or right of each obstacle
+```{r}
+visibility_levels <- c(25, 30, 40, 55, 150)
+
+trial_id <- interaction(
+  clean_data$ID,
+  clean_data$Trial_Number,
+  clean_data$Config_Number,
+  clean_data$visibility,
+  drop = TRUE
+)
+
+trial_list <- split(clean_data, trial_id)
+
+trial_sides_list <- lapply(trial_list, function(traj) {
+  
+  config_num <- as.numeric(
+    as.character(traj$Config_Number[1])
+  )
+  obstacles <- configurations_list[[config_num]] %>%
+    dplyr::filter(
+      Z_Pos > 0.1,
+      Z_Pos < 125
+    ) %>%
+    dplyr::mutate(
+      obstacle_id = dplyr::row_number()
+    )
+  player_x <- sapply(
+    obstacles$Z_Pos,
+    function(z) {
+      
+      closest_point <- which.min(
+        abs(traj$Z_Pos - z)
+      )
+      traj$X_Pos[closest_point]
+    }
+  )
+  
+  data.frame(
+    ID = traj$ID[1],
+    Trial_Number = traj$Trial_Number[1],
+    Config_Number = config_num,
+    visibility = as.numeric(
+      as.character(traj$visibility[1])
+    ),
+    obstacle_id = obstacles$obstacle_id,
+    side = ifelse(
+      player_x < obstacles$X_Pos,
+      0,   # left
+      1    # right
+    )
+  )
+})
+
+trial_sides <- dplyr::bind_rows(
+  trial_sides_list
+)
+```
+
+Formatting for plots
+```{r}
+clusters_plot <- trial_sides %>%
+  dplyr::arrange(
+    ID,
+    Trial_Number,
+    Config_Number,
+    visibility,
+    obstacle_id
+  ) %>%
+  dplyr::group_by(
+    ID,
+    Trial_Number,
+    Config_Number,
+    visibility
+  ) %>%
+  dplyr::summarise(
+    path = paste(side, collapse = ""),
+    .groups = "drop"
+  )
+
+# Stable route IDs across visibility conditions (so the same color shows for different visibilities)
+clusters_plot <- clusters_plot %>%
+  dplyr::group_by(Config_Number) %>%
+  dplyr::mutate(
+    Cluster = dplyr::dense_rank(path)
+  ) %>%
+  dplyr::ungroup() %>%
+  # Frequency remains specific to each condition
+  dplyr::group_by(Config_Number, visibility, Cluster) %>%
+  dplyr::mutate(
+    cluster_n = dplyr::n()
+  ) %>%
+  dplyr::ungroup()
+```
+
+
+Plot 1a: cluster number by visibility and config
+```{r}
+n_clusters <- clusters_plot %>%
+  
+  # Remove low-frequency clusters
+  dplyr::filter(cluster_n >= 5) %>%
+  # One row for each high-frequency cluster
+  dplyr::distinct(
+    Config_Number,
+    visibility,
+    Cluster
+  ) %>%
+  # Count hf clusters
+  dplyr::count(
+    Config_Number,
+    visibility,
+    name = "n_clusters"
+  ) %>%
+  tidyr::complete(
+    Config_Number = 1:10,
+    visibility = c(25, 30, 40, 55, 150),
+    fill = list(n_clusters = 0)
+  )
+
+# Plot
+cluster_number_plot <- ggplot(
+  n_clusters,
+  aes(
+    x = factor(visibility),
+    y = n_clusters
+  )
+  ) +
+  geom_col() +
+  facet_wrap(
+    ~ Config_Number,
+    nrow = 2
+  ) +
+  scale_y_continuous(
+    breaks = scales::breaks_width(1)
+  ) +
+  labs(
+    title = "# of \"High-Frequency\" Route Clusters by Visibility",
+    x = "Visibility (m)",
+    y = "Number of Clusters"
+  ) +
+  scale_y_continuous(
+    breaks = scales::breaks_width(1)
+  ) 
+
+cluster_number_plot
+```
+
+Plot 1b: combined line plot
+```{r}
+cluster_number_summary <- n_clusters %>%
+  dplyr::group_by(visibility) %>%
+  dplyr::summarise(
+    mean_clusters = mean(n_clusters),
+    se_clusters = sd(n_clusters) / sqrt(dplyr::n()),
+    .groups = "drop"
+  )
+
+cluster_number_line_plot <- ggplot() +
+  geom_line(
+    data = n_clusters,
+    aes(
+      x = visibility,
+      y = n_clusters,
+      color = factor(Config_Number),
+      group = Config_Number
+    )
+  ) +
+  geom_point(
+    data = n_clusters,
+    aes(
+      x = visibility,
+      y = n_clusters,
+      color = factor(Config_Number)
+    )
+  ) +
+  geom_errorbar( #+- 1 SE
+    data = cluster_number_summary,
+    aes(
+      x = visibility,
+      ymin = mean_clusters - se_clusters,
+      ymax = mean_clusters + se_clusters
+    )
+  ) +
+  geom_line(
+    data = cluster_number_summary,
+    aes(x = visibility, y = mean_clusters)
+  ) +
+  geom_point(
+    data = cluster_number_summary,
+    aes(x = visibility, y = mean_clusters)
+  ) +
+  scale_x_continuous(breaks = visibility_levels) +
+  labs(
+    title = "High-Frequency Route Clusters by Visibility",
+    x = "Visibility (m)",
+    y = "Number of Clusters",
+    color = "Configuration"
+  )
+
+cluster_number_line_plot
+
+```
+
+Plot 2a: number of low-frequency routes
+```{r}
+outlier_counts <- clusters_plot %>%
+  dplyr::filter(
+    cluster_n < 5
+  ) %>%
+  dplyr::count(
+    Config_Number,
+    visibility,
+    name = "n_outliers"
+  ) %>%
+  tidyr::complete(
+    Config_Number = 1:10,
+    visibility = visibility_levels,
+    fill = list(n_outliers = 0)
+  )
+
+# Plot low-frequency trajectories
+outlier_plot <- ggplot(
+  outlier_counts,
+  aes(
+    x = factor(visibility),
+    y = n_outliers,
+    group = 1
+  )
+) +
+  geom_col() +
+  facet_wrap(
+    ~ Config_Number,
+    nrow = 2
+  ) +
+  labs(
+    title = "# of \"Low-Frequency\" Trajectories by Visibility",
+    x = "Visibility (m)",
+    y = "Number of Low-Frequency Trajectories"
+  ) 
+
+outlier_plot
+```
+
+Plot 2b: combined line plot
+```{r}
+outlier_summary <- outlier_counts %>%
+  dplyr::group_by(visibility) %>%
+  dplyr::summarise(
+    mean_outliers = mean(n_outliers),
+    se_outliers = sd(n_outliers) / sqrt(dplyr::n()),
+    .groups = "drop"
+  )
+
+outlier_line_plot <- ggplot() +
+  geom_line(
+    data = outlier_counts,
+    aes(
+      x = visibility,
+      y = n_outliers,
+      color = factor(Config_Number),
+      group = Config_Number
+    )
+  ) +
+  geom_point(
+    data = outlier_counts,
+    aes(
+      x = visibility,
+      y = n_outliers,
+      color = factor(Config_Number)
+    )
+  ) +
+  geom_errorbar( #+- 1 SE
+    data = outlier_summary,
+    aes(
+      x = visibility,
+      ymin = mean_outliers - se_outliers,
+      ymax = mean_outliers + se_outliers
+    )
+  ) +
+  geom_line(
+    data = outlier_summary,
+    aes(x = visibility, y = mean_outliers)
+  ) +
+  geom_point(
+    data = outlier_summary,
+    aes(x = visibility, y = mean_outliers)
+  ) +
+  scale_x_continuous(breaks = visibility_levels) +
+  labs(
+    title = "Low-Frequency Trajectories by Visibility",
+    x = "Visibility (m)",
+    y = "Number of Low-Frequency Trajectories",
+    color = "Configuration"
+  )
+
+outlier_line_plot
+```
+
+Plot 3: actual trajectories
+```{r}
+# Add cluster information to trajectory data
+traj_clusters <- clean_data %>%
+  dplyr::left_join(
+    clusters_plot %>%
+      dplyr::select(
+        ID, Trial_Number, Config_Number, visibility,
+        Cluster, cluster_n
+      ),
+    by = c("ID", "Trial_Number", "Config_Number", "visibility")
+  )
+
+
+# Make one 2 x 5 plot for each configuration
+for (c in 1:10) {
+  
+  regular <- traj_clusters %>%
+    dplyr::filter(Config_Number == c, cluster_n >= 5) %>%
+    dplyr::mutate(type = "Clusters")
+  
+  low_freq <- traj_clusters %>%
+    dplyr::filter(Config_Number == c, cluster_n < 5) %>%
+    dplyr::mutate(type = "Low frequency")
+  
+  obstacles <- configurations_list[[c]]
+
+  
+  p <- ggplot() +
+    geom_path(
+      data = regular,
+      aes(
+        X_Pos, Z_Pos,
+        group = interaction(ID, Trial_Number),
+        color = factor(Cluster)
+      ),
+      alpha = 0.4
+    ) +
+    geom_path(
+      data = low_freq,
+      aes(
+        X_Pos, Z_Pos,
+        group = interaction(ID, Trial_Number)
+      ),
+      color = "black",
+      alpha = 0.4
+    ) +
+    geom_point(
+      data = obstacles,
+      aes(X_Pos, Z_Pos),
+      inherit.aes = FALSE
+    ) +
+    facet_grid(
+      type ~ visibility
+    ) +
+    coord_fixed() +
+    labs(
+      title = paste("Configuration", c),
+      x = "X Position",
+      y = "Z Position",
+      color = "Cluster"
+    ) +
+    theme(legend.position = "none")
+  
+  print(p)
+}
+```
